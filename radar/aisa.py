@@ -125,6 +125,7 @@ def chat(model: str, system: str, user: str, max_tokens: int = 1500) -> str:
         if not FALLBACK_MODEL or FALLBACK_MODEL == model or str(exc).startswith(("HTTP 401", "HTTP 402", "HTTP 403")):
             raise
         try:
-            return _chat_once(FALLBACK_MODEL, system, user, max_tokens)
+            # Gemini Flash thinks first and spends tokens on it; small budgets come back empty
+            return _chat_once(FALLBACK_MODEL, system, user, max(max_tokens * 2, 3000))
         except AisaError as exc2:
             raise AisaError(f"{model}: {exc}; fallback {FALLBACK_MODEL}: {exc2}") from exc2
