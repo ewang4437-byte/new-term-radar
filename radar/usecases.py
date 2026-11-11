@@ -24,8 +24,9 @@ For the day's new names this step:
      each: alone, for the shape of the curve (when it started rising, its peak, what it
      is doing now), and next to a benchmark keyword ("gpts" by default), for the size.
      A generic term's searches a day come from its own Google Ads volume, moved to today
-     along its own curve. The benchmark is sized from those terms, and a name, which has
-     no volume data yet, is sized against the benchmark.
+     along its own curve. The benchmark is sized from those terms (the median over the
+     last BENCH_DAYS days; with none, names get no size), and a name, which has no
+     volume data yet, is sized against the benchmark.
 
 The result is one table, names and generic terms together, each with a decision
 (table()). Phrases with measurable volume are also kept as leads of kind "usecase" and
@@ -77,6 +78,9 @@ MOMENTUM_MIN_BASE = 5      # of 100: the week before must reach this for a week-
 NOW_DAYS = 3               # a peak in the last three settled days is still rising
 HOLD_SHARE = 0.5           # at half its peak or more in those days, a term is holding
 CALIBRATE_MIN = 1000       # monthly searches a term needs to help size the benchmark
+CALIBRATE_LEVEL = 5        # and its mean level next to the benchmark: at 1 or 2 of 100, rounding alone is 50%
+BENCH_DAYS = 14            # the benchmark's size is the median of the samples from this many days
+DWARF_LEVEL = 20           # a benchmark squeezed under this by a name reads too coarse to size that name
 NEW_BASE_MAX = 10          # a baseline under 10 (of 100) means the term barely existed before
 MAX_PER_NAME = 6
 STATE_DAYS = 30
@@ -176,7 +180,7 @@ def propose(model: str, name: str, ev: dict) -> list[dict]:
         return []
     posts = "\n".join(f"- ({p['likes']} likes) @{p['by']}: {p['text'][:POST_CHARS]}" for p in ev["posts"])
     user = f"NAME: {name}\n\nPOSTS:\n{posts or '(none found)'}\n" + (f"\nREADME of {ev['repo']}:\n{ev['readme']}\n" if ev["readme"] else "")
-    return parse(aisa.chat(model, SYSTEM, user, max_tokens=900), name)
+    return parse(aisa.chat(model, SYSTEM + os.environ.get("RADAR_KEYWORD_HINT", ""), user, max_tokens=900), name)
 
 
 SCREEN = (
@@ -284,7 +288,7 @@ def volumes(phrases: list[str], location_code: int) -> tuple[dict[str, dict], in
     if not phrases:
         return {}, 0
     data, cost = aisa.call([{"call_id": "vol", "tool": VOLUME_TOOL, "arguments": {"body": [{
-        "keywords": phrases, "location_code": location_code, "language_code": "en"}]}}])
+        "keywords": phrases, "location_code": location_code, "language_code": os.environ.get("RADAR_LANGUAGE_CODE", "en")}]}}])
     out = {}
     for r in ((data.get("vol") or {}).get("tasks") or [{}])[0].get("result") or []:
         months = sorted((f"{m['year']}-{m['month']:02d}", int(m.get("search_volume") or 0)) for m in r.get("monthly_searches") or [])
@@ -390,11 +394,12 @@ def own_per_day(points: list[tuple[date, int]], volume: int, month: str, today: 
     return round(volume / 30 * recent / anchor) if anchor and volume else None
 
 
-def bench_daily(rows: list[dict]) -> float | None:
-    """The benchmark's searches a day, worked back from the terms whose volume is known:
+def bench_samples(rows: list[dict]) -> list[float]:
+    """The benchmark's searches a day, worked back from each term whose volume is known:
     in the month of the volume data, a term at a third of the benchmark's level with
-    3,000 searches a day puts the benchmark at 9,000. The median over the terms with
-    at least CALIBRATE_MIN searches a month; Trends is too coarse below that."""
+    3,000 searches a day puts the benchmark at 9,000. Only terms with at least
+    CALIBRATE_MIN searches a month and a mean level of CALIBRATE_LEVEL next to the
+    benchmark count; Trends is too coarse below that."""
     found = []
     for r in rows:
         pair, month = r.get("_pair") or [], r.get("month")
@@ -402,14 +407,26 @@ def bench_daily(rows: list[dict]) -> float | None:
             continue
         term = _mean([v for d, v, _ in pair if _in_month(d, month)])
         bench = _mean([b for d, _, b in pair if _in_month(d, month)])
-        if term and bench:
-            found.append(r["volume"] / 30 * bench / term)
-    return statistics.median(found) if found else None
+        if term >= CALIBRATE_LEVEL and bench >= CALIBRATE_LEVEL:
+            found.append(round(r["volume"] / 30 * bench / term, 1))
+    return found
+
+
+def bench_daily(history: dict[str, list[float]], today: date) -> tuple[float | None, int]:
+    """(searches a day, samples used): the median of the samples kept from the last
+    BENCH_DAYS days, so one or two terms do not decide a day. No samples, no size: the
+    benchmark's own Google Ads volume is not used, as it folds in close variants
+    ("gpts" read as 2.7 million a month)."""
+    cutoff = (today - timedelta(days=BENCH_DAYS - 1)).isoformat()
+    found = [v for day, vs in history.items() if day >= cutoff for v in vs]
+    return (statistics.median(found) if found else None), len(found)
 
 
 def size(pair: list[tuple[date, int, int]], today: date, daily: float | None) -> dict:
     """A term next to the benchmark on one scale: its peak against the benchmark's usual
-    level, and, when the benchmark's size is known, searches a day now."""
+    level, and, when the benchmark's size is known, searches a day now. `dwarfed`: the
+    term pushed the benchmark under DWARF_LEVEL, where its few integer steps are too
+    coarse to size the term."""
     pair = review.settled(pair, today)
     level = _mean([b for _, _, b in pair])
     if not level:
@@ -418,6 +435,8 @@ def size(pair: list[tuple[date, int, int]], today: date, daily: float | None) ->
     out = {"peak_vs": max(v for _, v, _ in window), "bench_level": round(level, 1)}
     if daily:
         out["per_day"] = round(_mean([v for _, v, _ in pair[-RECENT_DAYS:]]) / level * daily)
+        # only when the term set the scale: a spiky benchmark averages low on its own
+        out["dwarfed"] = level < DWARF_LEVEL and max(v for _, v, _ in pair) >= 50
     return out
 
 
@@ -447,25 +466,33 @@ def _pairs(task: dict) -> list[tuple[date, int, int]]:
     return rows
 
 
-def fetch_series(keywords: list[str], benchmark: str, today: date) -> tuple[dict[str, dict], int]:
-    """{keyword: {"solo": [(day, value)], "pair": [(day, value, benchmark value)]}}: two Trends lookups each."""
+def fetch_series(keywords: list[str], benchmark: str, today: date, location_code: int | None = None) -> tuple[dict[str, dict], int]:
+    """{keyword: {"solo": [(day, value)], "pair": [(day, value, benchmark value)]}}: two Trends lookups each.
+    The pair is read in `location_code`, the country the volumes come from, so the two agree."""
     window = {"date_from": (today - timedelta(days=TRENDS_DAYS)).isoformat(), "date_to": today.isoformat()}
+    where = {"location_code": location_code} if location_code else {}
     calls = []
     for i, k in enumerate(keywords):
         calls.append({"call_id": f"s{i}", "tool": review.TOOL, "arguments": {"body": [{"keywords": [k], **window}]}})
-        calls.append({"call_id": f"p{i}", "tool": review.TOOL, "arguments": {"body": [{"keywords": [k, benchmark], **window}]}})
+        calls.append({"call_id": f"p{i}", "tool": review.TOOL, "arguments": {"body": [{"keywords": [k, benchmark], **window, **where}]}})
     data, cost = aisa.call_all(calls)
     task = lambda cid: ((data.get(cid) or {}).get("tasks") or [{}])[0]  # noqa: E731
     return {k: {"solo": review._series(task(f"s{i}")), "pair": _pairs(task(f"p{i}"))} for i, k in enumerate(keywords)}, cost
 
 
 def measure(rows: list[dict], series: dict[str, dict], min_daily: int, today: date,
-            country: dict[str, list] | None = None) -> float | None:
-    """Fills each row with its shape, size and decision. Returns the benchmark's calibrated
-    size. A row with a one-country series takes its shape from that (`trend_geo` says so)."""
+            country: dict[str, list] | None = None, history: dict[str, list[float]] | None = None) -> tuple[float | None, int]:
+    """Fills each row with its shape, size and decision, and adds today's benchmark samples
+    to `history` ({day: [searches a day]}). Returns the benchmark's size and the samples
+    behind it. A row with a one-country series takes its shape from that (`trend_geo` says
+    so). A name sized against a dwarfed benchmark is not prioritized on that size alone."""
     for r in rows:
         r["_pair"] = series.get(r["phrase"], {}).get("pair") or []
-    daily = bench_daily(rows)
+    history = {} if history is None else history
+    today_samples = bench_samples(rows)
+    if today_samples:
+        history[today.isoformat()] = today_samples
+    daily, used = bench_daily(history, today)
     for r in rows:
         solo = series.get(r["phrase"], {}).get("solo") or []
         local = (country or {}).get(r["phrase"])
@@ -478,8 +505,12 @@ def measure(rows: list[dict], series: dict[str, dict], min_daily: int, today: da
         own = own_per_day(solo, r.get("volume", 0), r.get("month", ""), today)
         if own is not None:
             z["per_day"] = own      # a term's own volume is a better anchor than the benchmark
-        r.update({**s, **z, "decision": decide(s, z.get("per_day"), min_daily)})
-    return daily
+            z.pop("dwarfed", None)
+        if not z.get("dwarfed"):
+            z.pop("dwarfed", None)
+        decision = decide(s, z.get("per_day"), min_daily)
+        r.update({**s, **z, "decision": "watch" if decision == "prioritize" and z.get("dwarfed") else decision})
+    return daily, used
 
 
 def run(cfg: dict, state: Path, names: list[str], repos: dict[str, str], today: date | None = None,
@@ -527,9 +558,12 @@ def run(cfg: dict, state: Path, names: list[str], repos: dict[str, str], today: 
     generic = sorted((dict(r, **vol[p]) for p, r in proposed.items() if vol.get(p, {}).get("volume", 0) >= c["min_volume"]),
                      key=lambda r: -r["volume"])[:c["trends_max"]]
     rows = [{"term": n, "phrase": n, "kind": "name", "names": [], "brand": True, "evidence": "", **vol.get(n, {})} for n in todo] + generic
-    series, c3 = fetch_series([r["phrase"] for r in rows], bench, today)
+    series, c3 = fetch_series([r["phrase"] for r in rows], bench, today, c["location_code"])
     local, c4, local_errors = country_series(rows, c) if goanyapi.key() and c.get("country_trends", True) else ({}, 0, [])
-    daily = measure(rows, series, c["min_daily"], today, local)
+    bench_path = state / "usecases_bench.json.gz"
+    history = {d: v for d, v in (snap.load(bench_path) or {}).items() if d >= (today - timedelta(days=BENCH_DAYS)).isoformat()}
+    daily, samples = measure(rows, series, c["min_daily"], today, local, history)
+    snap.save(bench_path, history)
     acted, first = [r for r in rows if r["decision"] in ("prioritize", "watch")], [r for r in rows if r["decision"] == "prioritize"]
     c6, age_errors = wordage.assess(acted, cfg, today)          # before the page-one check: a new term reads easier there
     c7, market_errors = markets.assess(acted, cfg, {c["location_code"]: vol})
@@ -547,7 +581,7 @@ def run(cfg: dict, state: Path, names: list[str], repos: dict[str, str], today: 
         cutoff = (today - timedelta(days=STATE_DAYS)).isoformat()
         snap.save(path, {n: s for n, s in seen.items() if s["first"] >= cutoff})
     return {"names": todo, "rows": rows, "proposed": asked, "relevant": len(proposed), "kept": len(generic), "benchmark": bench,
-            "bench_daily": round(daily) if daily else None, "volume_month": next((r["month"] for r in generic if r.get("month")), ""),
+            "bench_daily": round(daily) if daily else None, "bench_samples": samples, "bench_days": BENCH_DAYS, "volume_month": next((v["month"] for v in vol.values() if v.get("month")), ""),
             "no_evidence": [n for n in todo if not ev[n]["posts"] and not ev[n]["readme"]],
             "posts_error": "; ".join(f"{n}: {e['error']}" for n, e in ev.items() if e.get("error")),
             "related": use_related, "tails": {n: v for n, v in tails.items() if v}, "cosearch": cosearch,

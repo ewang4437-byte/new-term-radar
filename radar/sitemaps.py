@@ -31,6 +31,7 @@ from .terms import by_source, surges
 TIMEOUT = 40
 RETRIES = 3
 RETRY_PAUSE = 10
+INDEX_TRIES, INDEX_PAUSE = 6, 20   # reads of an index that lists none of the wanted shards
 MIN_URLS = 3
 TOP = 25
 DEFAULT_PAUSE = 3
@@ -56,14 +57,36 @@ def fetch(url: str) -> str:
     return ""
 
 
+def locs(url: str) -> list[str]:
+    """The <loc> entries of one sitemap. A body with none is read again after a pause:
+    toolify now and then answers 200 with no entries, and is fine a minute later."""
+    for attempt in range(RETRIES):
+        found = _LOC.findall(fetch(url))
+        if found or attempt == RETRIES - 1:
+            return found
+        time.sleep(RETRY_PAUSE * (attempt + 1))
+    return []
+
+
+def shard_files(index: str, shards: str) -> list[str]:
+    """The sub-sitemaps of `index` that `shards` picks. An index with none of them is read
+    again: toolify's CDN serves an older index in turn with the current one, and the older
+    one lacks the newest shard."""
+    for attempt in range(INDEX_TRIES):
+        files = [u for u in locs(index) if re.search(shards, u.replace("&amp;", "&"))]
+        if files or attempt == INDEX_TRIES - 1:
+            return files
+        time.sleep(INDEX_PAUSE)
+    return []
+
+
 def site_urls(index: str, shards: str | None, pause: float, strip_locale: bool = False) -> set[str]:
-    files = [index] if not shards else \
-        [u for u in _LOC.findall(fetch(index)) if re.search(shards, u.replace("&amp;", "&"))]
+    files = [index] if not shards else shard_files(index, shards)
     urls: set[str] = set()
     for i, u in enumerate(files):
         if i or shards:
             time.sleep(pause)
-        urls.update(x.replace("&amp;", "&") for x in _LOC.findall(fetch(u)))
+        urls.update(x.replace("&amp;", "&") for x in locs(u))
     return {re.sub(_LOCALE, r"\1", u) for u in urls} if strip_locale else urls
 
 

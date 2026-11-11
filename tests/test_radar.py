@@ -499,6 +499,8 @@ def test_every_text_has_both_languages():
 
 
 def test_mail_html_renders_tables():
+    import pytest
+    pytest.importorskip("markdown")   # optional: only --mail needs it
     out = notify.html("| a | b |\n|---|---|\n| 1 | 2 |")
     assert "<table style=" in out and ">1</td>" in out
     # Gmail drops a <style> block outside <head>: every tag carries its own style.
@@ -582,8 +584,30 @@ def test_the_benchmark_is_sized_from_terms_whose_volume_is_known():
     def row(volume, term_level, bench_level):
         return {"volume": volume, "month": "2026-08", "_pair": [(d, term_level, bench_level) for d, _ in _daily([0] * 90)]}
     # a term with 3,000 searches a day at a third of the benchmark's level puts the benchmark at 9,000
-    assert usecases.bench_daily([row(90000, 10, 30), row(900, 1, 50)]) == 9000   # the 900/month term is too small to count
-    assert usecases.bench_daily([row(900, 1, 50)]) is None
+    assert usecases.bench_samples([row(90000, 10, 30), row(900, 10, 50)]) == [9000]   # the 900/month term is too small to count
+    assert usecases.bench_samples([row(90000, 2, 60)]) == []    # at level 2, rounding alone moves it by half
+    # the size is the median of the readings from the last BENCH_DAYS days
+    old = (TODAY - timedelta(days=usecases.BENCH_DAYS)).isoformat()
+    recent = (TODAY - timedelta(days=3)).isoformat()
+    assert usecases.bench_daily({old: [90000.0], recent: [300.0, 900.0], TODAY.isoformat(): [700.0]}, TODAY) == (700.0, 3)
+    # with no reading, no size: the benchmark's own volume is not a fallback
+    small = [{"phrase": "x", "volume": 900, "month": "2026-08"}]
+    assert usecases.measure(small, {}, 300, TODAY) == (None, 0)
+    history = {recent: [800.0]}
+    assert usecases.measure(small, {}, 300, TODAY, history=history) == (800.0, 1)
+
+
+def test_a_name_that_dwarfs_the_benchmark_is_not_prioritized_on_its_size():
+    rise = _daily([1] * 85 + [9, 53, 40, 59, 100])
+    rows = [{"phrase": "idol", "kind": "name"}]
+    series = {"idol": {"solo": rise, "pair": [(d, v, 5) for d, v in rise]}}
+    usecases.measure(rows, series, 300, TODAY, history={TODAY.isoformat(): [1000.0]})
+    assert rows[0]["dwarfed"] and rows[0]["per_day"] > 300 and rows[0]["decision"] == "watch"
+    # a benchmark that averages low by itself, next to a name nobody searches, is not dwarfed
+    quiet = [{"phrase": "dsh go", "kind": "name"}]
+    usecases.measure(quiet, {"dsh go": {"solo": [], "pair": [(d, 0, 100 if i % 7 == 0 else 0) for i, (d, _) in enumerate(rise)]}},
+                     300, TODAY, history={TODAY.isoformat(): [1000.0]})
+    assert "dwarfed" not in quiet[0]
 
 
 def test_decisions():
@@ -606,7 +630,7 @@ def _fake_usecase_network(monkeypatch):
     monkeypatch.setattr(usecases, "volumes", lambda phrases, loc: (
         {"ai image detector": {"volume": 60000, "month": "2026-08"}, "photoshop alternative": {"volume": 6000, "month": "2026-08"},
          "nobody searches this": {"volume": 0, "month": ""}}, 90000))
-    monkeypatch.setattr(usecases, "fetch_series", lambda keywords, bench, today: (
+    monkeypatch.setattr(usecases, "fetch_series", lambda keywords, bench, today, loc=None: (
         {k: {"solo": rise if k == "synthid detector" else flat,
              "pair": [(d, v, 40) for d, v in (rise if k == "synthid detector" else flat)]} for k in keywords}, 7200))
 

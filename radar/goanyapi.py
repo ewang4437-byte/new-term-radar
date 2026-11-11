@@ -79,16 +79,16 @@ def daily_series(term: str, geo: str = "US", window: str = "today 1-m") -> tuple
     return out, cost
 
 
-def serp(q: str, gl: str = "US") -> tuple[list[dict], int]:
+def serp(q: str, gl: str = os.environ.get("RADAR_GL", "US")) -> tuple[list[dict], int]:
     """Google's organic results for a query (2 credits): [{"url", "title", "rank"}]."""
-    data, cost = call("serp", q=q, gl=gl, hl="en")
+    data, cost = call("serp", q=q, gl=gl, hl=os.environ.get("RADAR_HL", "en"))
     return [{"url": o.get("link") or "", "title": o.get("title") or "", "rank": o.get("rank")}
             for o in (data.get("result") or {}).get("organic") or []], cost
 
 
 def intitle(term: str, window: str = "m") -> tuple[int | None, int]:
     """How many pages Google holds with `term` in the title, from the last week or month (4 credits)."""
-    data, cost = call("google-intitle", intitle=term, gl="us", qdr=window)
+    data, cost = call("google-intitle", intitle=term, gl=os.environ.get("RADAR_GL", "us").lower(), qdr=window)
     count = data.get("intitleCount")
     return (int(count) if isinstance(count, (int, float)) or str(count).isdigit() else None), cost
 
