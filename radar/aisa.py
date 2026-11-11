@@ -106,7 +106,7 @@ def rest(path: str, task: dict) -> tuple[dict, int]:
 
 
 # If the judge model fails (timeout, 5xx, odd answer), ask this one once instead. Empty turns it off.
-FALLBACK_MODEL = os.environ.get("RADAR_CHAT_FALLBACK", "gemini-2.5-flash").strip()
+FALLBACK_MODEL = os.environ.get("RADAR_CHAT_FALLBACK", "gemini-3.8-flash").strip()
 
 
 def _chat_once(model: str, system: str, user: str, max_tokens: int) -> str:
