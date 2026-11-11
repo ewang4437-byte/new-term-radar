@@ -20,6 +20,7 @@ no ratings and only the difficulty speaks. In a name's first week page one is st
 (news, the maker's own pages): read it again at the second reading.
 """
 from __future__ import annotations
+import os
 
 import re
 from concurrent.futures import ThreadPoolExecutor
@@ -53,7 +54,7 @@ def page_kind(domain: str, url: str, title: str) -> str:
 def page_one(keyword: str, location: int) -> tuple[dict, int]:
     """{"results": [{"domain", "url", "title", "position", "kind"}], "ads", "features"} and the cost."""
     data, cost = aisa.call([{"call_id": "serp", "tool": SERP_TOOL, "arguments": {"body": [{
-        "keyword": keyword, "location_code": location, "language_code": "en", "depth": 10}]}}])
+        "keyword": keyword, "location_code": location, "language_code": os.environ.get("RADAR_LANGUAGE_CODE", "en"), "depth": 10}]}}])
     items = (((data.get("serp") or {}).get("tasks") or [{}])[0].get("result") or [{}])[0].get("items") or []
     results = [{"domain": re.sub(r"^www\.", "", i.get("domain") or ""), "url": i.get("url") or "", "title": i.get("title") or "",
                 "position": i.get("rank_group")} for i in items if i.get("type") == "organic"][:10]
@@ -65,7 +66,7 @@ def page_one(keyword: str, location: int) -> tuple[dict, int]:
 
 def difficulty(keywords: list[str], location: int) -> tuple[dict[str, int | None], int]:
     data, cost = aisa.call([{"call_id": "kd", "tool": KD_TOOL, "arguments": {"body": [{
-        "keywords": keywords, "location_code": location, "language_code": "en"}]}}])
+        "keywords": keywords, "location_code": location, "language_code": os.environ.get("RADAR_LANGUAGE_CODE", "en")}]}}])
     items = ((((data.get("kd") or {}).get("tasks") or [{}])[0].get("result") or [{}])[0].get("items") or [])
     return {i["keyword"]: (i.get("keyword_properties") or {}).get("keyword_difficulty") for i in items}, cost
 
