@@ -13,3 +13,20 @@ __pycache__/
 build/
 dist/
 .DS_Store
+
+# ---- Local data: never commit (keys, personal config, results) ----
+.env
+.env.*
+config.json
+config-*.json
+!config.example.json
+server.json
+state/
+state-*/
+logs/
+report-*
+traffic-*
+keywords-*.txt
+kw-*.txt
+*.bak*
+gsc_*.json

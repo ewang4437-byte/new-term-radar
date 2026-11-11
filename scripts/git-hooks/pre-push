@@ -1,0 +1,7 @@
+#!/bin/sh
+# Blocks pushes that carry keys or personal files. Install: sh scripts/git-hooks/install.sh
+bad=$(git diff --name-only @{u}.. 2>/dev/null | grep -E '(^|/)(\.env(\..*)?|config(-[a-z]+)?\.json|server\.json|gsc_[a-z]+\.json)$|^state|^logs/|^report-|^traffic-' | grep -v 'config\.example\.json')
+if [ -n "$bad" ]; then echo "pre-push: personal files staged, not pushing:"; echo "$bad"; exit 1; fi
+if git diff -U0 @{u}.. -- . ':!scripts/git-hooks' 2>/dev/null | grep -E '^\+' | grep -qE 'sk-[A-Za-z0-9_-]{20,}|AIza[0-9A-Za-z_-]{30,}|ghp_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{20,}|ya29\.|"refresh_token" *: *"[^"]+|(API_KEY|_TOKEN|SECRET)[A-Z_]* *= *[A-Za-z0-9_-]{16,}'; then
+  echo "pre-push: something that looks like a key is in the staged changes; not pushing."; exit 1
+fi
