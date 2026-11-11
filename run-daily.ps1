@@ -31,8 +31,13 @@ try {
     if ($LASTEXITCODE -eq 0) {
         Set-Content $doneFile $today
         "[$(Get-Date -Format s)] OK" | Write-Log
-        & "$PSScriptRoot\run-vn.ps1" *>&1 | Write-Log
-        "[$(Get-Date -Format s)] VN exit=$LASTEXITCODE" | Write-Log
+        # VN run: one retry after 10 minutes if it fails (network blips, a busy API)
+        for ($try = 1; $try -le 2; $try++) {
+            & "$PSScriptRoot\run-vn.ps1" *>&1 | Write-Log
+            "[$(Get-Date -Format s)] VN exit=$LASTEXITCODE (try $try)" | Write-Log
+            if ($LASTEXITCODE -eq 0) { break }
+            if ($try -lt 2) { Start-Sleep -Seconds 600 }
+        }
         python scripts\vn_social.py *>&1 | Write-Log
         "[$(Get-Date -Format s)] VN social exit=$LASTEXITCODE" | Write-Log
         python scripts\balance.py *>&1 | Write-Log

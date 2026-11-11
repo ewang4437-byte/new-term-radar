@@ -105,10 +105,26 @@ def rest(path: str, task: dict) -> tuple[dict, int]:
     return (t.get("result") or [{}])[0] or {}, int(round(float(body.get("cost") or t.get("cost") or 0) * 1e6))
 
 
-def chat(model: str, system: str, user: str, max_tokens: int = 1500) -> str:
+# If the judge model fails (timeout, 5xx, odd answer), ask this one once instead. Empty turns it off.
+FALLBACK_MODEL = os.environ.get("RADAR_CHAT_FALLBACK", "gemini-2.5-flash").strip()
+
+
+def _chat_once(model: str, system: str, user: str, max_tokens: int) -> str:
     body = _post(CHAT, {"model": model, "temperature": 0, "max_tokens": max_tokens, "messages": [
         {"role": "system", "content": system}, {"role": "user", "content": user}]}, CHAT_TIMEOUT)
     try:
         return body["choices"][0]["message"]["content"] or ""
     except (KeyError, IndexError, TypeError) as exc:
         raise AisaError(f"unexpected chat answer: {str(body)[:160]}") from exc
+
+
+def chat(model: str, system: str, user: str, max_tokens: int = 1500) -> str:
+    try:
+        return _chat_once(model, system, user, max_tokens)
+    except AisaError as exc:
+        if not FALLBACK_MODEL or FALLBACK_MODEL == model or str(exc).startswith(("HTTP 401", "HTTP 402", "HTTP 403")):
+            raise
+        try:
+            return _chat_once(FALLBACK_MODEL, system, user, max_tokens)
+        except AisaError as exc2:
+            raise AisaError(f"{model}: {exc}; fallback {FALLBACK_MODEL}: {exc2}") from exc2

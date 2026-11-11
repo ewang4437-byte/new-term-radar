@@ -42,11 +42,14 @@ def aisa() -> float | None:
     if not k:
         return None
     body = get(os.environ.get("AISA_API_BASE_URL", "https://api.aisa.one") + "/v1/credits/balance", k)
-    b = body.get("balance") if isinstance(body.get("balance"), dict) else (body.get("data") or {}).get("balance", {})
-    v = (b or {}).get("available_usd")
-    if v is None:
-        v = body.get("available_usd")
-    return float(v) if v is not None else None
+    # The API answers in micro-USD (available_balance_micros_usd); older answers had available_usd.
+    for d in (body, body.get("data") or {}, body.get("balance") if isinstance(body.get("balance"), dict) else {},
+              (body.get("data") or {}).get("balance") if isinstance((body.get("data") or {}).get("balance"), dict) else {}):
+        if d.get("available_balance_micros_usd") is not None:
+            return round(int(d["available_balance_micros_usd"]) / 1e6, 2)
+        if d.get("available_usd") is not None:
+            return float(d["available_usd"])
+    return None
 
 
 def goany() -> float | None:
